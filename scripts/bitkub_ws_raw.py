@@ -25,8 +25,12 @@ async def main(pairing_id: int, seconds: float):
                     msg = await asyncio.wait_for(ws.receive(), timeout=max(remaining, 0.1))
                 except asyncio.TimeoutError:
                     break
+                if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING,
+                                aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    print(f"socket closed by peer: {msg.type!r}", flush=True)
+                    break
                 if msg.type is not aiohttp.WSMsgType.TEXT:
-                    print(f"non-text frame: {msg.type}", flush=True)
+                    print(f"ignoring frame: {msg.type!r}", flush=True)
                     continue
                 payload = json.loads(msg.data)
                 event = payload.get("event", "<no event key>")
