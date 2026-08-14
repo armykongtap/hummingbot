@@ -1,0 +1,102 @@
+name: Build Docker Image
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+# A full build is ~1h (conda env + Cython build_ext). If several commits land in
+# quick succession, cancel the older run so :latest tracks the newest commit
+# rather than whichever build happens to finish last.
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # The builder stage (conda env + Cython artifacts) plus the release image
+      # exceeds the ~14GB free on a stock runner. Reclaim ~20GB first.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute build date
+        id: build_date
+        run: echo "date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-,format=short
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          # Load into the local daemon so the smoke test can run it before we
+          # publish anything to :latest.
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            BRANCH=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.build_date.outputs.date }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+
+      # Import a Cython extension and the Bitkub connector: an image can build
+      # cleanly while build_ext produced broken or missing .so files.
+      - name: Smoke test image
+        run: |
+          docker run --rm "${IMAGE}:latest" python -c "
+          import hummingbot.core.clock
+          from hummingbot.connector.exchange.bitkub import bitkub_exchange
+          print('smoke test ok:', bitkub_exchange.BitkubExchange.__name__)
+          "
+
+      # Every layer is already in the local build cache, so this only uploads.
+      - name: Push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            BRANCH=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.build_date.outputs.date }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
