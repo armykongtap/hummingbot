@@ -1,11 +1,12 @@
 name: ci
 
+# Upstream's full suite: conda environment, Cython compile, the whole test suite, a
+# diff-cover gate and a Discord notification that needs a secret this fork does not
+# set. Roughly 40 minutes for a fork whose only divergence is the Bitkub connector,
+# which bitkub_tests.yml covers in about two. Left as manual-only: run it after
+# syncing upstream, or when changing anything outside the connector.
 on:
-  push:
-    branches: [master, development, 'refactor/unit_tests**', 'epic/**']
-  pull_request:
-    branches: [master, development, 'refactor/unit_tests**', 'epic/**']
-    types: [ready_for_review, opened, synchronize, reopened]
+  workflow_dispatch:
 
 jobs:
   run_client:
@@ -27,7 +28,10 @@ jobs:
             **/*.+(py|pyx|pyd|yml)
       - name: Check if client files are modified
         id: check_files
-        if: github.event_name == 'push' || env.GIT_DIFF
+        # workflow_dispatch sets neither GIT_DIFF (that step is pull_request-only) nor
+        # the push branch, so without it listed here a manual run would gate itself off
+        # and silently skip the build job it exists to trigger.
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || env.GIT_DIFF
         run: |
           echo "is_set=true" >> $GITHUB_OUTPUT
 
