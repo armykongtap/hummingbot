@@ -1,0 +1,33 @@
+# Overlay image: the released upstream client plus this fork's Bitkub connector.
+#
+# The fork's only divergence from upstream is hummingbot/connector/exchange/bitkub/,
+# which is pure Python. Nothing here needs compiling, so there is no reason to rebuild
+# the conda environment and the Cython extensions from source on every push. Layering
+# the connector onto the published image turns a ~1h build into a ~1min one and makes
+# arm64 essentially free.
+#
+# Caveat: every file except the Bitkub connector comes from the base image, not from
+# the build context. If this fork ever diverges from upstream outside that directory,
+# the change will NOT appear in this image -- silently. Build ./Dockerfile from source
+# in that case (see the build_from_source job in .github/workflows/docker_image.yml).
+
+# Pinned by the caller to version-$(cat hummingbot/VERSION) so the base always matches
+# the source tree this fork is built from.
+ARG BASE_TAG=latest
+FROM hummingbot/hummingbot:${BASE_TAG}
+
+ARG BRANCH=""
+ARG COMMIT=""
+ARG BUILD_DATE=""
+LABEL branch=${BRANCH}
+LABEL commit=${COMMIT}
+LABEL date=${BUILD_DATE}
+
+# Override the base image's provenance with this fork's, so a running container
+# reports the commit it was actually built from.
+ENV COMMIT_SHA=${COMMIT}
+ENV COMMIT_BRANCH=${BRANCH}
+ENV BUILD_DATE=${BUILD_DATE}
+
+COPY hummingbot/connector/exchange/bitkub/ \
+     /home/hummingbot/hummingbot/connector/exchange/bitkub/

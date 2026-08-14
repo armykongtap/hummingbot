@@ -6,9 +6,6 @@ on:
       - master
   workflow_dispatch:
 
-# A full build is ~1h (conda env + Cython build_ext). If several commits land in
-# quick succession, cancel the older run so :latest tracks the newest commit
-# rather than whichever build happens to finish last.
 concurrency:
   group: docker-image-${{ github.ref }}
   cancel-in-progress: true
@@ -17,6 +14,8 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  # Fast path, runs on every push to master. Layers this fork's Bitkub connector
+  # onto the matching released upstream image rather than compiling from source.
   build:
     runs-on: ubuntu-latest
     permissions:
@@ -27,13 +26,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      # The builder stage (conda env + Cython artifacts) plus the release image
-      # exceeds the ~14GB free on a stock runner. Reclaim ~20GB first.
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
-          df -h /
+      # Derived from hummingbot/VERSION rather than hardcoded, so syncing upstream
+      # moves the base along with the source tree. If upstream has not published the
+      # tag yet the build fails on "manifest unknown", which is the correct outcome.
+      - name: Resolve base image tag
+        id: base
+        run: echo "tag=version-$(cat hummingbot/VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -58,45 +59,97 @@ jobs:
             type=raw,value=latest
             type=sha,prefix=sha-,format=short
 
-      - name: Build image
+      # Built amd64-only and loaded locally so the smoke test can run it. `load`
+      # cannot be combined with a multi-platform build, hence the separate push
+      # step below; the overlay is a single small layer so building twice is cheap.
+      - name: Build amd64 image for testing
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
+          file: ./Dockerfile.bitkub
           platforms: linux/amd64
-          # Load into the local daemon so the smoke test can run it before we
-          # publish anything to :latest.
           load: true
           push: false
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ env.IMAGE }}:test
           build-args: |
+            BASE_TAG=${{ steps.base.outputs.tag }}
             BRANCH=${{ github.ref_name }}
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ steps.build_date.outputs.date }}
-          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
 
-      # Import a Cython extension and the Bitkub connector: an image can build
-      # cleanly while build_ext produced broken or missing .so files.
+      # Importing a Cython module proves the base image itself is sound. The
+      # discovery assertion is the one that matters for the overlay: it fails if the
+      # connector landed anywhere the client does not scan, which a plain import
+      # would not catch.
       - name: Smoke test image
         run: |
-          docker run --rm "${IMAGE}:latest" python -c "
+          docker run --rm "${IMAGE}:test" python -c "
           import hummingbot.core.clock
-          from hummingbot.connector.exchange.bitkub import bitkub_exchange
-          print('smoke test ok:', bitkub_exchange.BitkubExchange.__name__)
+          from hummingbot.client.settings import AllConnectorSettings
+          settings = AllConnectorSettings.get_connector_settings()
+          assert 'bitkub' in settings, sorted(settings)
+          print('smoke test ok:', settings['bitkub'].name, settings['bitkub'].type)
           "
 
-      # Every layer is already in the local build cache, so this only uploads.
-      - name: Push image
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
-          platforms: linux/amd64
+          file: ./Dockerfile.bitkub
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
+            BASE_TAG=${{ steps.base.outputs.tag }}
             BRANCH=${{ github.ref_name }}
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ steps.build_date.outputs.date }}
-          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+
+  # Slow path, manual only. The overlay image ignores every file outside the Bitkub
+  # connector, so nothing else would catch a fork-wide change that fails to compile.
+  # Run this after syncing upstream, or after touching anything beyond the connector.
+  # Validation only: it does not publish.
+  build_from_source:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # The builder stage (conda env + Cython artifacts) plus the release image
+      # exceeds the ~14GB free on a stock runner. Reclaim ~20GB first.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # amd64 only: emulating the Cython build_ext under QEMU for arm64 risks
+      # exceeding the 6h job limit.
+      - name: Build from source
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: hummingbot-from-source:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test image
+        run: |
+          docker run --rm hummingbot-from-source:test python -c "
+          import hummingbot.core.clock
+          from hummingbot.client.settings import AllConnectorSettings
+          settings = AllConnectorSettings.get_connector_settings()
+          assert 'bitkub' in settings, sorted(settings)
+          print('smoke test ok:', settings['bitkub'].name, settings['bitkub'].type)
+          "
