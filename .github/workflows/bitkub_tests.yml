@@ -1,0 +1,51 @@
+name: Bitkub Tests
+
+# The repo's main `ci` workflow creates the conda environment, compiles the Cython
+# extensions and runs the whole suite -- tens of minutes for a connector that is
+# pure Python. The released upstream image already ships the compiled client and
+# the test dependencies (pytest, aioresponses, aiounittest, pytest-asyncio), so the
+# connector and its tests can simply be mounted over it. Nothing is built here.
+
+on:
+  push:
+    paths:
+      - 'hummingbot/connector/exchange/bitkub/**'
+      - 'test/hummingbot/connector/exchange/bitkub/**'
+      - '.github/workflows/bitkub_tests.yml'
+  pull_request:
+    paths:
+      - 'hummingbot/connector/exchange/bitkub/**'
+      - 'test/hummingbot/connector/exchange/bitkub/**'
+      - '.github/workflows/bitkub_tests.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: bitkub-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Bitkub connector tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # Matches the source tree rather than tracking `latest`, so the client the
+      # tests run against is the one this fork is based on.
+      - name: Resolve base image tag
+        id: base
+        run: echo "tag=version-$(cat hummingbot/VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        env:
+          BASE: hummingbot/hummingbot:${{ steps.base.outputs.tag }}
+        run: |
+          docker run --rm \
+            -v "$PWD/hummingbot/connector/exchange/bitkub:/home/hummingbot/hummingbot/connector/exchange/bitkub:ro" \
+            -v "$PWD/test:/home/hummingbot/test:ro" \
+            -w /home/hummingbot "$BASE" \
+            python -m pytest test/hummingbot/connector/exchange/bitkub -v
