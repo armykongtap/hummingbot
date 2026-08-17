@@ -112,3 +112,26 @@ class PureMarketMakingStartTest(IsolatedAsyncioWrapperTestCase):
         self.assertEqual(self.strategy.order_override, {"split_level_0": ['buy', Decimal("1"), Decimal("1")],
                                                         "split_level_1": ['buy', Decimal("2"), Decimal("2")],
                                                         })
+
+    async def test_external_price_source_different_exchange_keeps_own_name(self):
+        c_map.get("price_source_exchange").value = "kucoin"
+        maker_connector = self.connector_manager.connectors["binance"]
+
+        await strategy_start.start(self)
+
+        self.assertIn("kucoin", self.connector_manager.connectors)
+        self.assertIs(self.connector_manager.connectors["binance"], maker_connector)
+
+    async def test_external_price_source_same_exchange_does_not_clobber_maker(self):
+        # Price source on the same exchange as the maker market: the order-book-only
+        # market must be registered under a suffixed key so the live trading
+        # connector stays intact.
+        c_map.get("price_source_exchange").value = "binance"
+        c_map.get("price_source_market").value = "ETH-BTC"
+        maker_connector = self.connector_manager.connectors["binance"]
+
+        await strategy_start.start(self)
+
+        self.assertIn("binance_paper_trade", self.connector_manager.connectors)
+        self.assertIs(self.connector_manager.connectors["binance"], maker_connector)
+        self.assertIsNot(self.connector_manager.connectors["binance_paper_trade"], maker_connector)

@@ -55,8 +55,6 @@ def price_source_market_prompt() -> str:
 
 
 def validate_price_source_exchange(value: str) -> Optional[str]:
-    if value == pure_market_making_config_map.get("exchange").value:
-        return "Price source exchange cannot be the same as maker exchange."
     return validate_connector(value)
 
 

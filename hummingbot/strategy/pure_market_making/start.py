@@ -86,7 +86,12 @@ async def start(self):
         if price_source == "external_market":
             asset_trading_pair: str = price_source_market
             ext_market = create_paper_trade_market(price_source_exchange, [asset_trading_pair])
-            self.connector_manager.connectors[price_source_exchange]: ExchangeBase = ext_market
+            price_source_key = price_source_exchange
+            if price_source_key == exchange:
+                # Same-exchange price source: register under a distinct key so the live
+                # trading connector is not overwritten by this order-book-only market.
+                price_source_key = f"{price_source_exchange}_paper_trade"
+            self.connector_manager.connectors[price_source_key]: ExchangeBase = ext_market
             asset_price_delegate = OrderBookAssetPriceDelegate(ext_market, asset_trading_pair)
         elif price_source == "custom_api":
             asset_price_delegate = APIAssetPriceDelegate(self.markets[exchange], price_source_custom_api,
