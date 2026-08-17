@@ -50,6 +50,22 @@ jobs:
         id: build_date
         run: echo "date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 
+      # Version tag is {branch}-{short sha}-{utc timestamp}, e.g.
+      # master-a1b2c3d-20260817134500. Docker tags allow [a-zA-Z0-9_][a-zA-Z0-9._-]*
+      # only, so the branch is sanitised: workflow_dispatch can run on a ref like
+      # "feature/foo", and the "/" would otherwise be read as a registry path
+      # separator. The timestamp is deliberately colon-free for the same reason,
+      # so it cannot reuse the ISO-8601 BUILD_DATE above.
+      # ref_name goes through env, not direct ${{ }} interpolation, so a branch
+      # name cannot inject shell.
+      - name: Compute version tag
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          branch=$(printf '%s' "$REF_NAME" | tr -c 'a-zA-Z0-9_.-' '-')
+          echo "tag=${branch}-${GITHUB_SHA::7}-$(date -u +'%Y%m%d%H%M%S')" >> "$GITHUB_OUTPUT"
+
       - name: Compute image tags
         id: meta
         uses: docker/metadata-action@v5
@@ -57,7 +73,7 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=raw,value=latest
-            type=sha,prefix=sha-,format=short
+            type=raw,value=${{ steps.version.outputs.tag }}
 
       # Built amd64-only and loaded locally so the smoke test can run it. `load`
       # cannot be combined with a multi-platform build, hence the separate push
